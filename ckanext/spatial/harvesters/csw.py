@@ -118,20 +118,26 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
             self._save_gather_error('Error gathering the identifiers from the CSW server [%s]' % str(e), harvest_job)
             return None
 
-        new = guids_in_harvest - guids_in_db
+        new_hos = guids_in_harvest - guids_in_db
         delete = guids_in_db - guids_in_harvest
-        change = guids_in_db & guids_in_harvest
+        existing_hos = guids_in_db & guids_in_harvest
 
         ids = []
-        for guid in new:
+        for guid in new_hos:
             obj = HarvestObject(guid=guid, job=harvest_job,
                                 extras=[HOExtra(key='status', value='new')])
             obj.save()
             ids.append(obj.id)
-        for guid in change:
-            obj = HarvestObject(guid=guid, job=harvest_job,
-                                package_id=guid_to_package_id[guid],
-                                extras=[HOExtra(key='status', value='change')])
+        for guid in existing_hos:
+            package_id = guid_to_package_id[guid]
+            if package_id:
+                obj = HarvestObject(guid=guid, job=harvest_job,
+                                    package_id=package_id,
+                                    extras=[HOExtra(key='status', value='change')])
+            else:
+                obj = HarvestObject(guid=guid, job=harvest_job,
+                                    extras=[HOExtra(key='status', value='new')])
+
             obj.save()
             ids.append(obj.id)
         for guid in delete:

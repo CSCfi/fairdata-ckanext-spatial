@@ -7,7 +7,6 @@ import logging
 from string import Template
 from urlparse import urlparse
 from datetime import datetime
-import uuid
 import hashlib
 import dateutil
 import mimetypes
@@ -601,10 +600,6 @@ class SpatialHarvester(HarvesterBase):
             package_schema = logic.schema.default_create_package_schema()
             package_schema['tags'] = tag_schema
             context['schema'] = package_schema
-
-            # We need to explicitly provide a package ID, otherwise ckanext-spatial
-            # won't be be able to link the extent to the package.
-            package_dict['id'] = unicode(uuid.uuid4())
             package_schema['id'] = [unicode]
 
             try:
