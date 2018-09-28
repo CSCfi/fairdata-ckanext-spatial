@@ -510,6 +510,7 @@ class SpatialHarvester(HarvesterBase):
         # Parse ISO document
         try:
             iso_parser = ISODocument(harvest_object.content)
+            harvest_object.add()
             iso_values = iso_parser.read_values()
         except Exception, e:
             self._save_object_error('Error parsing ISO document for object {0}: {1}'.format(harvest_object.id, str(e)),
@@ -544,7 +545,7 @@ class SpatialHarvester(HarvesterBase):
         try:
             metadata_modified_date = dateutil.parser.parse(iso_values['metadata-date'], ignoretz=True)
             harvest_object.metadata_modified_date = metadata_modified_date
-            harvest_object.save()
+            harvest_object.add()
         except ValueError:
             self._save_object_error('Could not extract reference date for object {0} ({1})'
                         .format(harvest_object.id, iso_values['metadata-date']), harvest_object, 'Import')
