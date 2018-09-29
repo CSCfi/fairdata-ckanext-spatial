@@ -20,9 +20,6 @@ from lxml import etree
 from ckan import plugins as p
 from ckan import model
 from ckan.lib.helpers import json
-from ckan import logic
-from ckan.lib.navl.validators import not_empty
-from ckan.lib.search.index import PackageSearchIndex
 
 from ckanext.harvest.harvesters.base import HarvesterBase
 from ckanext.harvest.model import HarvestObject
@@ -446,10 +443,7 @@ class SpatialHarvester(HarvesterBase):
             'user': self._get_user_name(),
         }
 
-        if self.force_import:
-            status = 'change'
-        else:
-            status = self._get_object_extra(harvest_object, 'status')
+        status = self._get_object_extra(harvest_object, 'status')
 
         if status == 'delete':
             harvest_object.content = None
@@ -592,16 +586,7 @@ class SpatialHarvester(HarvesterBase):
         if self._site_user and context['user'] == self._site_user['name']:
             context['ignore_auth'] = True
 
-        # The default package schema does not like Upper case tags
-        tag_schema = logic.schema.default_tags_schema()
-        tag_schema['name'] = [not_empty, unicode]
-
         if status == 'new':
-            package_schema = logic.schema.default_create_package_schema()
-            package_schema['tags'] = tag_schema
-            context['schema'] = package_schema
-            package_schema['id'] = [unicode]
-
             try:
                 package_id = p.toolkit.get_action('package_create')(context, package_dict)
                 if not package_id:
@@ -620,54 +605,20 @@ class SpatialHarvester(HarvesterBase):
                 # plugin)
                 model.Session.execute('SET CONSTRAINTS harvest_object_package_id_fkey DEFERRED')
                 model.Session.flush()
-
                 log.info('Created new package %s with guid %s', package_id, harvest_object.guid)
             except p.toolkit.ValidationError, e:
                 self._save_object_error('Validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
                 return False
 
         elif status == 'change':
-
             # Set force_harvest_update from config if it exists, default to false
             force_harvest_update = self.source_config.get('force_harvest_update', False)
 
             if previous_object:
                 # Check if the modified date is more recent
-                if not force_harvest_update and not self.force_import and harvest_object.metadata_modified_date <= previous_object.metadata_modified_date:
+                is_modified_after_previous = harvest_object.metadata_modified_date > previous_object.metadata_modified_date
 
-                    # Assign the previous job id to the new object to
-                    # avoid losing history
-                    harvest_object.harvest_job_id = previous_object.job.id
-                    harvest_object.add()
-
-                    # Delete the previous object to avoid cluttering the object table
-                    previous_object.delete()
-
-                    # Reindex the corresponding package to update the reference to the
-                    # harvest object
-                    if ((config.get('ckanext.spatial.harvest.reindex_unchanged', True) != 'False'
-                        or self.source_config.get('reindex_unchanged') != 'False')
-                        and harvest_object.package_id):
-                        context.update({'validate': False, 'ignore_auth': True})
-                        try:
-                            package_dict = logic.get_action('package_show')(context,
-                                {'id': harvest_object.package_id})
-                        except p.toolkit.ObjectNotFound:
-                            pass
-                        else:
-                            for extra in package_dict.get('extras', []):
-                                if extra['key'] == 'harvest_object_id':
-                                    extra['value'] = harvest_object.id
-                            if package_dict:
-                                package_index = PackageSearchIndex()
-                                package_index.index_package(package_dict)
-
-                    log.info('Document with GUID %s unchanged, skipping...' % (harvest_object.guid))
-                else:
-                    package_schema = logic.schema.default_update_package_schema()
-                    package_schema['tags'] = tag_schema
-                    context['schema'] = package_schema
-
+                if force_harvest_update or is_modified_after_previous:
                     package_dict['id'] = harvest_object.package_id
                     try:
                         package_id = p.toolkit.get_action('package_update')(context, package_dict)
@@ -677,6 +628,15 @@ class SpatialHarvester(HarvesterBase):
                     except p.toolkit.ValidationError, e:
                         self._save_object_error('Validation Error: %s' % str(e.error_summary), harvest_object, 'Import')
                         return False
+                else:
+                    # Assign the previous job id to the new object to
+                    # avoid losing history
+                    harvest_object.harvest_job_id = previous_object.job.id
+                    harvest_object.add()
+
+                    # Delete the previous object to avoid cluttering the object table
+                    previous_object.delete()
+                    log.info('Document with GUID %s unchanged, skipping...' % (harvest_object.guid))
             else:
                 log.error("Previous harvest object does not exist even though update operation had been assumed. "
                           "Skipping this one..")
