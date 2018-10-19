@@ -17,26 +17,26 @@ from ckanext.spatial.harvesters.base import SpatialHarvester, text_traceback
 
 from ckanext.etsin.data_catalog_service import ensure_data_catalog_ok
 
+
 class CSWHarvester(SpatialHarvester, SingletonPlugin):
     '''
     A Harvester for CSW servers
     '''
     implements(IHarvester)
 
-    csw=None
+    csw = None
 
     def info(self):
         return {
             'name': 'csw',
             'title': 'CSW Server',
             'description': 'A server that implements OGC\'s Catalog Service for the Web (CSW) standard'
-            }
-
+        }
 
     def get_original_url(self, harvest_object_id):
-        obj = model.Session.query(HarvestObject).\
-                                    filter(HarvestObject.id==harvest_object_id).\
-                                    first()
+        obj = model.Session.query(HarvestObject). \
+            filter(HarvestObject.id == harvest_object_id). \
+            first()
 
         parts = urlparse.urlparse(obj.source.url)
 
@@ -45,7 +45,7 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
             'VERSION': '2.0.2',
             'REQUEST': 'GetRecordById',
             'OUTPUTSCHEMA': 'http://www.isotc211.org/2005/gmd',
-            'OUTPUTFORMAT':'application/xml' ,
+            'OUTPUTFORMAT': 'application/xml',
             'ID': obj.guid
         }
 
@@ -65,11 +65,14 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
 
     def gather_stage(self, harvest_job):
         log = logging.getLogger(__name__ + '.CSW.gather')
-        log.debug('CswHarvester gather_stage for job: %r', harvest_job)
-        # Get source URL
-        url = harvest_job.source.url
+        log.info('CSW Harvester gather_stage for job: %r', harvest_job)
 
         self._set_source_config(harvest_job.source.config)
+        cql = self.source_config.get('cql')
+        identifier_schema = self.source_config.get('identifier_schema', self.output_schema())
+        url = harvest_job.source.url
+
+        log.info('Harvest source: %s', url)
 
         # Data catalog related operations
         if not ensure_data_catalog_ok(self.source_config.get('harvest_source_name', '')):
@@ -81,82 +84,74 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
             self._save_gather_error('Error contacting the CSW server: %s' % e, harvest_job)
             return None
 
-        query = model.Session.query(HarvestObject.guid, HarvestObject.package_id).\
-                                    filter(HarvestObject.current==True).\
-                                    filter(HarvestObject.harvest_source_id==harvest_job.source.id)
-        guid_to_package_id = {}
-
-        for guid, package_id in query:
-            guid_to_package_id[guid] = package_id
-
-        guids_in_db = set(guid_to_package_id.keys())
-
-        # extract cql filter if any
-        cql = self.source_config.get('cql')
-
-        log.debug('Starting gathering for %s' % url)
-        guids_in_harvest = set()
-
-        identifier_schema = self.source_config.get('identifier_schema', self.output_schema())
-
+        guids_in_source = set()
         try:
             for identifier in self.csw.getidentifiers(page=10, outputschema=identifier_schema, cql=cql):
                 try:
-                    log.info('Got identifier %s from the CSW', identifier)
                     if identifier is None:
-                        log.error('CSW returned identifier %r, skipping...' % identifier)
+                        log.error('CSW did not return identifier, skipping...')
                         continue
-
-                    guids_in_harvest.add(identifier)
+                    guids_in_source.add(identifier)
                 except Exception, e:
-                    self._save_gather_error('Error for the identifier %s [%r]' % (identifier,e), harvest_job)
+                    self._save_gather_error('Error for the identifier %s [%r]' % (identifier, e), harvest_job)
                     continue
-
-
         except Exception, e:
             log.error('Exception: %s' % text_traceback())
             self._save_gather_error('Error gathering the identifiers from the CSW server [%s]' % str(e), harvest_job)
             return None
 
-        new_hos = guids_in_harvest - guids_in_db
-        delete = guids_in_db - guids_in_harvest
-        existing_hos = guids_in_db & guids_in_harvest
+        try:
+            object_ids = []
+            if len(guids_in_source):
+                log.debug('Record identifiers: %s', guids_in_source)
 
-        ids = []
-        for guid in new_hos:
-            obj = HarvestObject(guid=guid, job=harvest_job,
-                                extras=[HOExtra(key='status', value='new')])
-            obj.save()
-            ids.append(obj.id)
-        for guid in existing_hos:
-            package_id = guid_to_package_id[guid]
-            if package_id:
-                obj = HarvestObject(guid=guid, job=harvest_job,
-                                    package_id=package_id,
-                                    extras=[HOExtra(key='status', value='change')])
+                harvest_objs_in_db = model.Session.query(HarvestObject.guid, HarvestObject.package_id). \
+                    filter(HarvestObject.current == True). \
+                    filter(HarvestObject.harvest_source_id == harvest_job.source.id)
+
+                db_harvest_obj_guid_to_package_id_map = {}
+                for guid, package_id in harvest_objs_in_db:
+                    db_harvest_obj_guid_to_package_id_map[guid] = package_id
+
+                current_guids_in_db = set(db_harvest_obj_guid_to_package_id_map.keys())
+
+                new_guids = guids_in_source - current_guids_in_db
+                deleted_guids = current_guids_in_db - guids_in_source
+                existing_guids = current_guids_in_db & guids_in_source
+
+                for guid in new_guids:
+                    obj = HarvestObject(guid=guid, job=harvest_job,
+                                        extras=[HOExtra(key='status', value='new')])
+                    obj.save()
+                    object_ids.append(obj.id)
+                for guid in existing_guids:
+                    obj = HarvestObject(guid=guid, job=harvest_job,
+                                        package_id=db_harvest_obj_guid_to_package_id_map[guid],
+                                        extras=[HOExtra(key='status', value='change')])
+                    obj.save()
+                    object_ids.append(obj.id)
+                for guid in deleted_guids:
+                    obj = HarvestObject(guid=guid, job=harvest_job,
+                                        package_id=db_harvest_obj_guid_to_package_id_map[guid],
+                                        extras=[HOExtra(key='status', value='delete')])
+                    model.Session.query(HarvestObject). \
+                        filter_by(guid=guid). \
+                        update({'current': False}, False)
+                    obj.save()
+                    object_ids.append(obj.id)
+
+                log.debug('Harvest object IDs: {i}'.format(i=object_ids))
+                return object_ids
+
             else:
-                obj = HarvestObject(guid=guid, job=harvest_job,
-                                    extras=[HOExtra(key='status', value='new')])
+                self._save_gather_error('No records received from URL: {u}'.format(
+                    u=harvest_job.source.url), harvest_job)
+                return None
+        except Exception as e:
+            self._save_gather_error('Gather: {e}'.format(e=e), harvest_job)
+            raise
 
-            obj.save()
-            ids.append(obj.id)
-        for guid in delete:
-            obj = HarvestObject(guid=guid, job=harvest_job,
-                                package_id=guid_to_package_id[guid],
-                                extras=[HOExtra(key='status', value='delete')])
-            model.Session.query(HarvestObject).\
-                  filter_by(guid=guid).\
-                  update({'current': False}, False)
-            obj.save()
-            ids.append(obj.id)
-
-        if len(ids) == 0:
-            self._save_gather_error('No records received from the CSW server', harvest_job)
-            return None
-
-        return ids
-
-    def fetch_stage(self,harvest_object):
+    def fetch_stage(self, harvest_object):
 
         # Check harvest object status
         status = self._get_object_extra(harvest_object, 'status')
@@ -172,6 +167,7 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
         try:
             self._setup_csw_client(url)
         except Exception, e:
+            log.error('Error contacting the CSW server')
             self._save_object_error('Error contacting the CSW server: %s' % e,
                                     harvest_object)
             return False
@@ -181,6 +177,7 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
         try:
             record = self.csw.getrecordbyid([identifier], outputschema=self.output_schema(), esn=esn)
         except Exception, e:
+            log.error('Error getting the CSW record with GUID %s' % identifier)
             self._save_object_error('Error getting the CSW record with GUID %s' % identifier, harvest_object)
             return False
 
@@ -197,7 +194,7 @@ class CSWHarvester(SpatialHarvester, SingletonPlugin):
 
             harvest_object.content = content.strip()
             harvest_object.save()
-        except Exception,e:
+        except Exception, e:
             self._save_object_error('Error saving the harvest object for GUID %s [%r]' % \
                                     (identifier, e), harvest_object)
             return False
